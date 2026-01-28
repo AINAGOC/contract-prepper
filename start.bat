@@ -1,10 +1,21 @@
 @echo off
 chcp 932 >nul
+cd /d "%~dp0"
+
 echo ============================================
-echo   Keiyakusho Tool - Starting...
-echo   (Contract Document Preparation Tool)
+echo   Contract Document Tool - Starting...
 echo ============================================
 echo.
+
+REM --- Check if setup has been run ---
+if not exist "python\python.exe" (
+    echo [ERROR] Setup has not been run yet.
+    echo Please run setup_windows.bat first.
+    echo.
+    pause
+    exit /b 1
+)
+
 echo Browser will open at http://localhost:5000
 echo Do not close this window while using the tool.
 echo.
@@ -12,14 +23,7 @@ echo.
 REM --- Open browser ---
 start http://localhost:5000
 
-REM --- Start server ---
-python app.py
+REM --- Start server using embedded Python ---
+python\python.exe app.py
 
-if errorlevel 1 (
-    echo.
-    echo [ERROR] Python is not installed or not in PATH.
-    echo Please install Python from: https://www.python.org/downloads/
-    echo Make sure to check "Add Python to PATH" during installation.
-    echo.
-    pause
-)
+pause
