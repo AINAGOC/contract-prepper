@@ -14,6 +14,10 @@ if exist "python\python.exe" (
     goto :install_packages
 )
 
+REM --- Clean up any failed previous attempts ---
+if exist "python" rmdir /s /q "python" 2>nul
+if exist "python_embed.zip" del "python_embed.zip" 2>nul
+
 echo Downloading Python (Embedded version)...
 echo This may take a few minutes...
 echo.
@@ -24,16 +28,31 @@ set PYTHON_URL=https://www.python.org/ftp/python/%PYTHON_VERSION%/python-%PYTHON
 set PYTHON_ZIP=python_embed.zip
 
 REM --- Try PowerShell first (more reliable on corporate networks) ---
-echo Trying PowerShell download...
-powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('%PYTHON_URL%', '%PYTHON_ZIP%')" 2>nul
+echo Method 1: PowerShell...
+powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $wc = New-Object Net.WebClient; $wc.DownloadFile('%PYTHON_URL%', '%PYTHON_ZIP%')" 2>nul
 
-if exist "%PYTHON_ZIP%" goto :extract_python
+if exist "%PYTHON_ZIP%" (
+    echo Download successful.
+    goto :extract_python
+)
 
 REM --- Fallback to curl with SSL options ---
-echo PowerShell failed. Trying curl...
-curl -L -k --ssl-no-revoke -o %PYTHON_ZIP% %PYTHON_URL% 2>nul
+echo Method 2: curl...
+curl -L -k --ssl-no-revoke -o "%PYTHON_ZIP%" "%PYTHON_URL%" 2>nul
 
-if exist "%PYTHON_ZIP%" goto :extract_python
+if exist "%PYTHON_ZIP%" (
+    echo Download successful.
+    goto :extract_python
+)
+
+REM --- Fallback to certutil ---
+echo Method 3: certutil...
+certutil -urlcache -split -f "%PYTHON_URL%" "%PYTHON_ZIP%" 2>nul
+
+if exist "%PYTHON_ZIP%" (
+    echo Download successful.
+    goto :extract_python
+)
 
 REM --- Manual download instructions ---
 echo.
@@ -42,16 +61,34 @@ echo.
 echo Please download Python manually:
 echo   1. Open this URL in your browser:
 echo      %PYTHON_URL%
-echo   2. Save the file as "python_embed.zip" in this folder
+echo   2. Save the file as "python_embed.zip" in this folder:
+echo      %cd%
 echo   3. Run this setup again
 echo.
 pause
 exit /b 1
 
 :extract_python
+echo.
 echo Extracting Python...
-powershell -Command "Expand-Archive -Path '%PYTHON_ZIP%' -DestinationPath 'python' -Force"
-del %PYTHON_ZIP%
+mkdir python 2>nul
+powershell -Command "Expand-Archive -LiteralPath '%PYTHON_ZIP%' -DestinationPath 'python' -Force"
+
+REM --- Verify extraction ---
+if not exist "python\python.exe" (
+    echo [ERROR] Extraction failed. Trying alternative method...
+    powershell -Command "Add-Type -A 'System.IO.Compression.FileSystem'; [IO.Compression.ZipFile]::ExtractToDirectory('%PYTHON_ZIP%', 'python')"
+)
+
+if not exist "python\python.exe" (
+    echo [ERROR] Could not extract Python.
+    echo Please extract python_embed.zip manually into a folder named "python"
+    pause
+    exit /b 1
+)
+
+del "%PYTHON_ZIP%" 2>nul
+echo Extraction complete.
 
 REM --- Enable pip in embedded Python ---
 echo Configuring Python...
@@ -63,12 +100,18 @@ if exist "%PTH_FILE%" (
 )
 
 REM --- Download and install pip ---
+echo.
 echo Installing pip...
 set PIP_URL=https://bootstrap.pypa.io/get-pip.py
+
 powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('%PIP_URL%', 'python\get-pip.py')" 2>nul
 
 if not exist "python\get-pip.py" (
-    curl -L -k --ssl-no-revoke -o python\get-pip.py %PIP_URL% 2>nul
+    curl -L -k --ssl-no-revoke -o "python\get-pip.py" "%PIP_URL%" 2>nul
+)
+
+if not exist "python\get-pip.py" (
+    certutil -urlcache -split -f "%PIP_URL%" "python\get-pip.py" 2>nul
 )
 
 if not exist "python\get-pip.py" (
@@ -78,12 +121,13 @@ if not exist "python\get-pip.py" (
 )
 
 python\python.exe python\get-pip.py --no-warn-script-location -q
-del python\get-pip.py
+del "python\get-pip.py" 2>nul
 
 :install_packages
 echo.
 echo Installing required packages...
 python\python.exe -m pip install -r requirements.txt --no-warn-script-location -q
+
 if %errorlevel% neq 0 (
     echo [ERROR] Package installation failed.
     pause
