@@ -1,45 +1,50 @@
 @echo off
-chcp 65001 >nul
+chcp 932 >nul
 echo ============================================
-echo   契約書一括整形・チェックツール セットアップ
+echo   Setup - Contract Document Tool
 echo ============================================
 echo.
 
-REM --- Pythonの確認 ---
+REM --- Check Python ---
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [エラー] Pythonがインストールされていません。
-    echo 以下のURLからPythonをインストールしてください：
-    echo https://www.python.org/downloads/
-    echo ※インストール時に「Add Python to PATH」にチェックを入れてください
+    echo [ERROR] Python is not installed.
+    echo.
+    echo Please install Python first:
+    echo   1. Go to https://www.python.org/downloads/
+    echo   2. Download and run the installer
+    echo   3. IMPORTANT: Check "Add Python to PATH"
+    echo   4. Run this setup again
+    echo.
     pause
     exit /b 1
 )
 
-echo Pythonが見つかりました。
+echo Python found:
 python --version
 
-REM --- LibreOfficeの確認 ---
+REM --- Check LibreOffice ---
 where soffice >nul 2>&1
 if %errorlevel% neq 0 (
     echo.
-    echo [警告] LibreOfficeが見つかりません。PDF変換に必要です。
-    echo 以下のURLからインストールしてください：
-    echo https://ja.libreoffice.org/download/download/
+    echo [WARNING] LibreOffice not found. Required for PDF conversion.
+    echo Please install from: https://ja.libreoffice.org/download/download/
     echo.
 )
 
-REM --- 依存パッケージのインストール ---
+REM --- Install packages ---
 echo.
-echo 依存パッケージをインストールしています...
+echo Installing Python packages...
 pip install -r requirements.txt --quiet
 if %errorlevel% neq 0 (
-    echo [エラー] パッケージのインストールに失敗しました。
+    echo [ERROR] Package installation failed.
     pause
     exit /b 1
 )
 
 echo.
-echo セットアップが完了しました。
-echo 「start.bat」をダブルクリックしてツールを起動してください。
+echo ============================================
+echo   Setup complete!
+echo   Double-click start.bat to run the tool.
+echo ============================================
 pause
