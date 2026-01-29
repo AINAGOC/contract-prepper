@@ -148,18 +148,17 @@ async function processFiles(files, companyName, approvalType) {
                 const newName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.pdf';
                 outputFolder.file(newName, backupData);
                 results.processed.push(newName);
-                results.warnings.push(`${CONFIG.fileTypes[key].label}: 既にPDF形式のため、そのまま出力しました。`);
             } else if (ext === 'docx') {
                 // Word document processing
                 const processResult = await processDocx(file, key, companyName, approvalType);
                 results.errors.push(...processResult.errors);
                 results.warnings.push(...processResult.warnings);
 
-                if (processResult.cleanedDocx) {
-                    // Output cleaned DOCX only (PDF conversion not supported for Japanese)
-                    const docxName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.docx';
-                    outputFolder.file(docxName, processResult.cleanedDocx);
-                    results.processed.push(docxName);
+                // Output PDF
+                if (processResult.pdfBlob) {
+                    const pdfName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.pdf';
+                    outputFolder.file(pdfName, processResult.pdfBlob);
+                    results.processed.push(pdfName);
                 }
             } else if (ext === 'xlsx') {
                 // Excel document processing
@@ -167,11 +166,11 @@ async function processFiles(files, companyName, approvalType) {
                 results.errors.push(...processResult.errors);
                 results.warnings.push(...processResult.warnings);
 
-                if (processResult.outputData) {
-                    // Output XLSX only (PDF conversion not supported for Japanese)
-                    const xlsxName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.xlsx';
-                    outputFolder.file(xlsxName, processResult.outputData);
-                    results.processed.push(xlsxName);
+                // Output PDF
+                if (processResult.pdfBlob) {
+                    const pdfName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.pdf';
+                    outputFolder.file(pdfName, processResult.pdfBlob);
+                    results.processed.push(pdfName);
                 }
             }
         } catch (err) {
@@ -190,16 +189,18 @@ async function processFiles(files, companyName, approvalType) {
     return results;
 }
 
-// Process Word document - clean formatting
+// Process Word document - convert to PDF
 async function processDocx(file, fileType, companyName, approvalType) {
-    const result = { errors: [], warnings: [], cleanedDocx: null };
+    const result = { errors: [], warnings: [], pdfBlob: null };
 
     try {
         const arrayBuffer = await file.arrayBuffer();
 
-        // Extract text using mammoth for validation
-        const mammothResult = await mammoth.extractRawText({ arrayBuffer });
-        const fullText = mammothResult.value;
+        // Convert to HTML using mammoth
+        setSpinnerText(`${CONFIG.fileTypes[fileType].label} を解析中...`);
+        const mammothResult = await mammoth.convertToHtml({ arrayBuffer });
+        const html = mammothResult.value;
+        const fullText = await mammoth.extractRawText({ arrayBuffer }).then(r => r.value);
 
         // Validation
         if (fileType === 'contract') {
@@ -209,10 +210,9 @@ async function processDocx(file, fileType, companyName, approvalType) {
             validateOath(fullText, result);
         }
 
-        // Clean the DOCX (remove highlights, comments, etc.)
-        setSpinnerText(`${CONFIG.fileTypes[fileType].label} の書式を整形中...`);
-        const cleanedDocx = await cleanDocxFormatting(arrayBuffer);
-        result.cleanedDocx = cleanedDocx;
+        // Convert HTML to PDF
+        setSpinnerText(`${CONFIG.fileTypes[fileType].label} をPDFに変換中...`);
+        result.pdfBlob = await htmlToPdf(html, 'A4');
 
     } catch (err) {
         console.error('DOCX processing error:', err);
@@ -222,20 +222,128 @@ async function processDocx(file, fileType, companyName, approvalType) {
     return result;
 }
 
-// Validate contract document
-function validateContract(fullText, approvalType, result) {
-    if (approvalType === 'paper') {
-        // Check for specific dates that shouldn't be there yet
-        const datePattern = /令和\s*\d+\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日/;
-        const matches = fullText.match(datePattern);
-        if (matches) {
-            // Check if it's not a placeholder
-            const hasBlank = /令和\s*年\s*月\s*日/.test(fullText);
-            if (!hasBlank) {
-                result.warnings.push('【契約書確認】日付欄を確認してください。');
+// Process Excel file - convert to PDF
+async function processXlsx(file, fileType, companyName) {
+    const result = { errors: [], warnings: [], pdfBlob: null };
+
+    try {
+        const arrayBuffer = await file.arrayBuffer();
+        const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+
+        // Extract text for validation
+        let fullText = '';
+        for (const sheetName of workbook.SheetNames) {
+            const sheet = workbook.Sheets[sheetName];
+            const text = XLSX.utils.sheet_to_txt(sheet);
+            fullText += text + '\n';
+        }
+
+        // Validation
+        if (fileType === 'estimate') {
+            if (!fullText.includes(companyName) && companyName.length > 2) {
+                result.warnings.push('【見積書確認】会社名が見積書内で確認できませんでした。');
             }
         }
 
+        if (fileType === 'checklist') {
+            if (!fullText.includes('チェック')) {
+                result.warnings.push('【チェックシート確認】チェック項目の形式を確認してください。');
+            }
+        }
+
+        // Convert to HTML table
+        setSpinnerText(`${CONFIG.fileTypes[fileType].label} をPDFに変換中...`);
+        let html = '<div style="font-family: sans-serif; font-size: 10px;">';
+        for (const sheetName of workbook.SheetNames) {
+            const sheet = workbook.Sheets[sheetName];
+            html += `<h3>${sheetName}</h3>`;
+            html += XLSX.utils.sheet_to_html(sheet, { editable: false });
+        }
+        html += '</div>';
+
+        // Convert HTML to PDF (landscape for Excel)
+        result.pdfBlob = await htmlToPdf(html, 'A4', 'landscape');
+
+    } catch (err) {
+        console.error('XLSX processing error:', err);
+        result.errors.push(`Excel処理エラー: ${err.message}`);
+    }
+
+    return result;
+}
+
+// Convert HTML to PDF using html2canvas and jsPDF
+async function htmlToPdf(html, format = 'A4', orientation = 'portrait') {
+    const { jsPDF } = window.jspdf;
+
+    // Create container
+    const container = document.getElementById('pdfRenderContainer');
+    container.innerHTML = `
+        <div style="
+            width: ${orientation === 'landscape' ? '297mm' : '210mm'};
+            padding: 15mm;
+            background: white;
+            font-family: 'MS Gothic', 'Hiragino Kaku Gothic Pro', sans-serif;
+            font-size: 11pt;
+            line-height: 1.6;
+            color: black;
+        ">${html}</div>
+    `;
+
+    // Wait for rendering
+    await new Promise(r => setTimeout(r, 100));
+
+    // Capture with html2canvas
+    const canvas = await html2canvas(container.firstElementChild, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff'
+    });
+
+    // Create PDF
+    const pdf = new jsPDF({
+        orientation: orientation,
+        unit: 'mm',
+        format: format
+    });
+
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const margin = 10;
+    const contentWidth = pageWidth - (margin * 2);
+    const contentHeight = pageHeight - (margin * 2);
+
+    const imgWidth = contentWidth;
+    const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+    // Add pages if content is longer than one page
+    let heightLeft = imgHeight;
+    let position = margin;
+    let pageNum = 0;
+
+    const imgData = canvas.toDataURL('image/jpeg', 0.95);
+
+    while (heightLeft > 0) {
+        if (pageNum > 0) {
+            pdf.addPage();
+        }
+
+        pdf.addImage(imgData, 'JPEG', margin, position - (pageNum * contentHeight), imgWidth, imgHeight);
+
+        heightLeft -= contentHeight;
+        pageNum++;
+    }
+
+    // Clear container
+    container.innerHTML = '';
+
+    return pdf.output('blob');
+}
+
+// Validate contract document
+function validateContract(fullText, approvalType, result) {
+    if (approvalType === 'paper') {
         if (!fullText.includes(CONFIG.sealClause)) {
             result.errors.push('【契約書エラー】署名捺印条項が見つかりません。');
         }
@@ -294,107 +402,6 @@ function checkAppendix2Version(text, result) {
     }
 }
 
-// Clean DOCX formatting (remove highlights, bold in body, comments)
-async function cleanDocxFormatting(arrayBuffer) {
-    const zip = await JSZip.loadAsync(arrayBuffer);
-
-    // Process document.xml (main content)
-    const docXmlPath = 'word/document.xml';
-    if (zip.files[docXmlPath]) {
-        let docXml = await zip.files[docXmlPath].async('string');
-
-        // Remove highlight (w:highlight)
-        docXml = docXml.replace(/<w:highlight[^>]*\/>/g, '');
-        docXml = docXml.replace(/<w:highlight[^>]*>.*?<\/w:highlight>/g, '');
-
-        // Remove shading (background color) - but keep table shading
-        // Only remove paragraph/run level shading, not table cell shading
-        docXml = docXml.replace(/<w:shd[^>]*w:fill="[^"]*"[^>]*\/>/g, (match) => {
-            // Keep if it's likely table-related (preserve structure)
-            if (match.includes('w:val="clear"')) {
-                return match; // Keep clear shading
-            }
-            return ''; // Remove colored shading
-        });
-
-        // Remove comments references
-        docXml = docXml.replace(/<w:commentRangeStart[^>]*\/>/g, '');
-        docXml = docXml.replace(/<w:commentRangeEnd[^>]*\/>/g, '');
-        docXml = docXml.replace(/<w:commentReference[^>]*\/>/g, '');
-
-        // Remove bold from body text (but keep in headers/titles)
-        // This is tricky - we'll remove <w:b/> and <w:b w:val="true"/> but be careful
-        // Actually, let's skip bold removal as it might remove important formatting
-
-        zip.file(docXmlPath, docXml);
-    }
-
-    // Remove comments.xml if exists
-    if (zip.files['word/comments.xml']) {
-        zip.remove('word/comments.xml');
-    }
-
-    // Update content types if needed
-    const contentTypesPath = '[Content_Types].xml';
-    if (zip.files[contentTypesPath]) {
-        let contentTypes = await zip.files[contentTypesPath].async('string');
-        // Remove comments content type
-        contentTypes = contentTypes.replace(/<Override[^>]*comments\.xml[^>]*\/>/g, '');
-        zip.file(contentTypesPath, contentTypes);
-    }
-
-    // Update relationships
-    const relsPath = 'word/_rels/document.xml.rels';
-    if (zip.files[relsPath]) {
-        let rels = await zip.files[relsPath].async('string');
-        // Remove comments relationship
-        rels = rels.replace(/<Relationship[^>]*comments\.xml[^>]*\/>/g, '');
-        zip.file(relsPath, rels);
-    }
-
-    return await zip.generateAsync({ type: 'arraybuffer' });
-}
-
-// Process Excel file
-async function processXlsx(file, fileType, companyName) {
-    const result = { errors: [], warnings: [], outputData: null };
-
-    try {
-        const arrayBuffer = await file.arrayBuffer();
-        const workbook = XLSX.read(arrayBuffer, { type: 'array' });
-
-        // Extract text for validation
-        let fullText = '';
-        for (const sheetName of workbook.SheetNames) {
-            const sheet = workbook.Sheets[sheetName];
-            const text = XLSX.utils.sheet_to_txt(sheet);
-            fullText += text + '\n';
-        }
-
-        // Validation
-        if (fileType === 'estimate') {
-            if (!fullText.includes(companyName) && companyName.length > 2) {
-                result.warnings.push('【見積書確認】会社名が見積書内で確認できませんでした。');
-            }
-        }
-
-        if (fileType === 'checklist') {
-            if (!fullText.includes('チェック')) {
-                result.warnings.push('【チェックシート確認】チェック項目の形式を確認してください。');
-            }
-        }
-
-        // Output original XLSX
-        result.outputData = arrayBuffer;
-
-    } catch (err) {
-        console.error('XLSX processing error:', err);
-        result.errors.push(`Excel処理エラー: ${err.message}`);
-    }
-
-    return result;
-}
-
 // Display results
 function displayResults(results) {
     resultArea.style.display = 'block';
@@ -425,9 +432,6 @@ function displayResults(results) {
         }
         html += '</ul></div>';
     }
-
-    // Add note about PDF conversion
-    html += '<div class="alert alert-info mt-3"><small><strong>PDF変換について:</strong> Word/Excelで出力ファイルを開き、「ファイル」→「エクスポート」→「PDF/XPSの作成」または「印刷」→「Microsoft Print to PDF」でPDFに変換してください。</small></div>';
 
     alert.className = '';
     alert.innerHTML = html;
