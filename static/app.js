@@ -48,17 +48,15 @@ document.addEventListener('DOMContentLoaded', () => {
     // Wake up service before processing
     async function wakeUpService() {
         try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout for wake-up
-
+            console.log('Attempting wake-up call to /health...');
             const resp = await fetch('/health', {
-                signal: controller.signal,
+                method: 'GET',
                 cache: 'no-store'
             });
-            clearTimeout(timeoutId);
+            console.log('Wake-up response:', resp.status);
             return resp.ok;
         } catch (e) {
-            console.log('Wake-up attempt:', e.message);
+            console.error('Wake-up failed:', e.name, e.message);
             return false;
         }
     }
@@ -68,21 +66,18 @@ document.addEventListener('DOMContentLoaded', () => {
         let lastError;
         for (let i = 0; i < maxRetries; i++) {
             try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 180000); // 3 min timeout
-
-                const resp = await fetch(url, {
-                    ...options,
-                    signal: controller.signal
-                });
-                clearTimeout(timeoutId);
+                console.log(`Fetch attempt ${i + 1} to ${url}...`);
+                const resp = await fetch(url, options);
+                console.log(`Fetch response: ${resp.status}`);
                 return resp;
             } catch (e) {
                 lastError = e;
-                console.log(`Attempt ${i + 1} failed:`, e.message);
+                console.error(`Attempt ${i + 1} failed:`, e.name, e.message);
                 if (i < maxRetries - 1) {
                     // Wait before retry (2s, 4s, 8s)
-                    await new Promise(r => setTimeout(r, 2000 * Math.pow(2, i)));
+                    const waitTime = 2000 * Math.pow(2, i);
+                    console.log(`Waiting ${waitTime}ms before retry...`);
+                    await new Promise(r => setTimeout(r, waitTime));
                 }
             }
         }
@@ -105,25 +100,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             // Step 1: Wake up the service (Render free tier sleeps after 15 min)
-            if (spinnerText) spinnerText.textContent = 'サーバーを起動中...';
+            if (spinnerText) spinnerText.textContent = 'サーバーに接続中...';
+            console.log('Starting process...');
 
             let awake = await wakeUpService();
-            if (!awake) {
-                // Retry wake-up
-                if (spinnerText) spinnerText.textContent = 'サーバー起動を待機中（最大60秒）...';
-                for (let i = 0; i < 6; i++) {
-                    await new Promise(r => setTimeout(r, 10000)); // Wait 10s
-                    awake = await wakeUpService();
-                    if (awake) break;
-                }
+            let attempts = 0;
+            while (!awake && attempts < 6) {
+                attempts++;
+                if (spinnerText) spinnerText.textContent = `サーバー起動を待機中... (${attempts}/6)`;
+                console.log(`Wake-up retry ${attempts}/6, waiting 10s...`);
+                await new Promise(r => setTimeout(r, 10000)); // Wait 10s
+                awake = await wakeUpService();
             }
 
             if (!awake) {
-                throw new Error('サーバーが応答しません。しばらく待ってから再試行してください。');
+                throw new Error('サーバーが応答しません。ページを更新してから再試行してください。');
             }
 
             // Step 2: Process files
-            if (spinnerText) spinnerText.textContent = 'ファイルを処理中...';
+            if (spinnerText) spinnerText.textContent = 'ファイルを処理中...（PDF変換に時間がかかる場合があります）';
+            console.log('Server awake, sending files for processing...');
 
             const resp = await fetchWithRetry('/process', { method: 'POST', body: formData });
 
