@@ -21,9 +21,6 @@ const CONFIG = {
     partnerKeywords: ['カテゴリー及びパートナー', 'カテゴリー・パートナー']
 };
 
-// Japanese font (embedded base64 - NotoSansJP subset for common characters)
-let japaneseFont = null;
-
 // DOM Elements
 let form, spinner, resultArea, submitBtn, spinnerText;
 
@@ -159,17 +156,10 @@ async function processFiles(files, companyName, approvalType) {
                 results.warnings.push(...processResult.warnings);
 
                 if (processResult.cleanedDocx) {
-                    // Output cleaned DOCX
+                    // Output cleaned DOCX only (PDF conversion not supported for Japanese)
                     const docxName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.docx';
                     outputFolder.file(docxName, processResult.cleanedDocx);
                     results.processed.push(docxName);
-                }
-
-                if (processResult.pdfData) {
-                    // Output PDF
-                    const pdfName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.pdf';
-                    outputFolder.file(pdfName, processResult.pdfData);
-                    results.processed.push(pdfName);
                 }
             } else if (ext === 'xlsx') {
                 // Excel document processing
@@ -178,17 +168,10 @@ async function processFiles(files, companyName, approvalType) {
                 results.warnings.push(...processResult.warnings);
 
                 if (processResult.outputData) {
-                    // Output XLSX
+                    // Output XLSX only (PDF conversion not supported for Japanese)
                     const xlsxName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.xlsx';
                     outputFolder.file(xlsxName, processResult.outputData);
                     results.processed.push(xlsxName);
-                }
-
-                if (processResult.pdfData) {
-                    // Output PDF
-                    const pdfName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.pdf';
-                    outputFolder.file(pdfName, processResult.pdfData);
-                    results.processed.push(pdfName);
                 }
             }
         } catch (err) {
@@ -207,9 +190,9 @@ async function processFiles(files, companyName, approvalType) {
     return results;
 }
 
-// Process Word document - clean formatting and convert to PDF
+// Process Word document - clean formatting
 async function processDocx(file, fileType, companyName, approvalType) {
-    const result = { errors: [], warnings: [], cleanedDocx: null, pdfData: null };
+    const result = { errors: [], warnings: [], cleanedDocx: null };
 
     try {
         const arrayBuffer = await file.arrayBuffer();
@@ -230,11 +213,6 @@ async function processDocx(file, fileType, companyName, approvalType) {
         setSpinnerText(`${CONFIG.fileTypes[fileType].label} の書式を整形中...`);
         const cleanedDocx = await cleanDocxFormatting(arrayBuffer);
         result.cleanedDocx = cleanedDocx;
-
-        // Convert to PDF
-        setSpinnerText(`${CONFIG.fileTypes[fileType].label} をPDFに変換中...`);
-        const pdfData = await convertDocxToPdf(cleanedDocx, mammothResult);
-        result.pdfData = pdfData;
 
     } catch (err) {
         console.error('DOCX processing error:', err);
@@ -377,64 +355,9 @@ async function cleanDocxFormatting(arrayBuffer) {
     return await zip.generateAsync({ type: 'arraybuffer' });
 }
 
-// Convert DOCX to PDF (basic text-based conversion)
-async function convertDocxToPdf(docxArrayBuffer, mammothResult) {
-    const { PDFDocument, rgb, StandardFonts } = PDFLib;
-
-    // Get text content
-    let textContent = mammothResult ? mammothResult.value : '';
-
-    if (!textContent) {
-        // Re-extract if not provided
-        const result = await mammoth.extractRawText({ arrayBuffer: docxArrayBuffer });
-        textContent = result.value;
-    }
-
-    // Create PDF
-    const pdfDoc = await PDFDocument.create();
-
-    // Use standard font (Japanese characters will show as boxes - this is a limitation)
-    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-
-    // Page settings (A4)
-    const pageWidth = 595.28;
-    const pageHeight = 841.89;
-    const margin = 50;
-    const fontSize = 10;
-    const lineHeight = fontSize * 1.5;
-
-    const lines = textContent.split('\n');
-    let currentPage = pdfDoc.addPage([pageWidth, pageHeight]);
-    let y = pageHeight - margin;
-
-    for (const line of lines) {
-        if (y < margin + lineHeight) {
-            currentPage = pdfDoc.addPage([pageWidth, pageHeight]);
-            y = pageHeight - margin;
-        }
-
-        // Draw text (note: Japanese characters won't render properly with standard fonts)
-        try {
-            currentPage.drawText(line.substring(0, 80), {
-                x: margin,
-                y: y,
-                size: fontSize,
-                font: font,
-                color: rgb(0, 0, 0),
-            });
-        } catch (e) {
-            // Skip lines with unsupported characters
-        }
-
-        y -= lineHeight;
-    }
-
-    return await pdfDoc.save();
-}
-
 // Process Excel file
 async function processXlsx(file, fileType, companyName) {
-    const result = { errors: [], warnings: [], outputData: null, pdfData: null };
+    const result = { errors: [], warnings: [], outputData: null };
 
     try {
         const arrayBuffer = await file.arrayBuffer();
@@ -464,77 +387,12 @@ async function processXlsx(file, fileType, companyName) {
         // Output original XLSX
         result.outputData = arrayBuffer;
 
-        // Convert to PDF
-        setSpinnerText(`${CONFIG.fileTypes[fileType].label} をPDFに変換中...`);
-        result.pdfData = await convertXlsxToPdf(workbook);
-
     } catch (err) {
         console.error('XLSX processing error:', err);
         result.errors.push(`Excel処理エラー: ${err.message}`);
     }
 
     return result;
-}
-
-// Convert Excel to PDF
-async function convertXlsxToPdf(workbook) {
-    const { PDFDocument, rgb, StandardFonts } = PDFLib;
-
-    const pdfDoc = await PDFDocument.create();
-    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-
-    const pageWidth = 841.89; // A4 landscape
-    const pageHeight = 595.28;
-    const margin = 40;
-    const fontSize = 8;
-    const cellPadding = 5;
-
-    for (const sheetName of workbook.SheetNames) {
-        const sheet = workbook.Sheets[sheetName];
-        const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-
-        if (data.length === 0) continue;
-
-        let currentPage = pdfDoc.addPage([pageWidth, pageHeight]);
-        let y = pageHeight - margin;
-
-        // Calculate column widths
-        const maxCols = Math.max(...data.map(row => (row ? row.length : 0)));
-        const colWidth = (pageWidth - 2 * margin) / Math.min(maxCols, 10);
-
-        for (let rowIdx = 0; rowIdx < data.length; rowIdx++) {
-            const row = data[rowIdx] || [];
-
-            if (y < margin + 20) {
-                currentPage = pdfDoc.addPage([pageWidth, pageHeight]);
-                y = pageHeight - margin;
-            }
-
-            for (let colIdx = 0; colIdx < Math.min(row.length, 10); colIdx++) {
-                const cellValue = row[colIdx];
-                if (cellValue === undefined || cellValue === null) continue;
-
-                const text = String(cellValue).substring(0, 20);
-                const x = margin + colIdx * colWidth;
-
-                try {
-                    currentPage.drawText(text, {
-                        x: x + cellPadding,
-                        y: y,
-                        size: fontSize,
-                        font: font,
-                        color: rgb(0, 0, 0),
-                    });
-                } catch (e) {
-                    // Skip unsupported characters
-                }
-            }
-
-            y -= fontSize + cellPadding * 2;
-        }
-    }
-
-    return await pdfDoc.save();
 }
 
 // Display results
@@ -568,8 +426,8 @@ function displayResults(results) {
         html += '</ul></div>';
     }
 
-    // Add note about PDF limitations
-    html += '<div class="alert alert-info mt-3"><small><strong>注意:</strong> ブラウザでのPDF変換には制限があります。日本語が正しく表示されない場合は、元のファイル（.docx/.xlsx）を使用してください。</small></div>';
+    // Add note about PDF conversion
+    html += '<div class="alert alert-info mt-3"><small><strong>PDF変換について:</strong> Word/Excelで出力ファイルを開き、「ファイル」→「エクスポート」→「PDF/XPSの作成」または「印刷」→「Microsoft Print to PDF」でPDFに変換してください。</small></div>';
 
     alert.className = '';
     alert.innerHTML = html;
