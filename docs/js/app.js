@@ -276,22 +276,32 @@ async function processXlsx(file, fileType, companyName) {
 async function htmlToPdf(html, format = 'A4', orientation = 'portrait') {
     const { jsPDF } = window.jspdf;
 
-    // Create container
+    // Page dimensions in mm
+    const pageWidth = orientation === 'landscape' ? 297 : 210;
+    const pageHeight = orientation === 'landscape' ? 210 : 297;
+    const margin = 10;
+    const contentWidth = pageWidth - (margin * 2);
+    const contentHeight = pageHeight - (margin * 2);
+
+    // Create container with exact page width
     const container = document.getElementById('pdfRenderContainer');
+    const pxPerMm = 3.78; // approximate px per mm at 96dpi
+    const containerWidthPx = contentWidth * pxPerMm;
+
     container.innerHTML = `
         <div style="
-            width: ${orientation === 'landscape' ? '297mm' : '210mm'};
-            padding: 15mm;
+            width: ${containerWidthPx}px;
+            padding: 0;
             background: white;
-            font-family: 'MS Gothic', 'Hiragino Kaku Gothic Pro', sans-serif;
-            font-size: 11pt;
-            line-height: 1.6;
+            font-family: 'Yu Gothic', 'MS Gothic', 'Hiragino Kaku Gothic Pro', sans-serif;
+            font-size: 10.5pt;
+            line-height: 1.8;
             color: black;
         ">${html}</div>
     `;
 
     // Wait for rendering
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 200));
 
     // Capture with html2canvas
     const canvas = await html2canvas(container.firstElementChild, {
@@ -308,31 +318,44 @@ async function htmlToPdf(html, format = 'A4', orientation = 'portrait') {
         format: format
     });
 
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
-    const margin = 10;
-    const contentWidth = pageWidth - (margin * 2);
-    const contentHeight = pageHeight - (margin * 2);
-
+    // Calculate dimensions
     const imgWidth = contentWidth;
     const imgHeight = (canvas.height * imgWidth) / canvas.width;
 
-    // Add pages if content is longer than one page
-    let heightLeft = imgHeight;
-    let position = margin;
-    let pageNum = 0;
+    // Calculate how many pages we need
+    const totalPages = Math.ceil(imgHeight / contentHeight);
 
-    const imgData = canvas.toDataURL('image/jpeg', 0.95);
-
-    while (heightLeft > 0) {
-        if (pageNum > 0) {
+    // For each page, clip the appropriate portion of the canvas
+    for (let page = 0; page < totalPages; page++) {
+        if (page > 0) {
             pdf.addPage();
         }
 
-        pdf.addImage(imgData, 'JPEG', margin, position - (pageNum * contentHeight), imgWidth, imgHeight);
+        // Calculate which portion of the canvas to use for this page
+        const sourceY = (page * contentHeight / imgHeight) * canvas.height;
+        const sourceHeight = Math.min(
+            (contentHeight / imgHeight) * canvas.height,
+            canvas.height - sourceY
+        );
 
-        heightLeft -= contentHeight;
-        pageNum++;
+        // Create a temporary canvas for this page's content
+        const pageCanvas = document.createElement('canvas');
+        pageCanvas.width = canvas.width;
+        pageCanvas.height = sourceHeight;
+
+        const ctx = pageCanvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+        ctx.drawImage(
+            canvas,
+            0, sourceY, canvas.width, sourceHeight,  // source
+            0, 0, canvas.width, sourceHeight          // destination
+        );
+
+        const pageImgData = pageCanvas.toDataURL('image/jpeg', 0.95);
+        const pageImgHeight = (sourceHeight * imgWidth) / canvas.width;
+
+        pdf.addImage(pageImgData, 'JPEG', margin, margin, imgWidth, pageImgHeight);
     }
 
     // Clear container
