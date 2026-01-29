@@ -12,6 +12,17 @@ PARTNER_PAGE_KEYWORDS = ['カテゴリー及びパートナー', 'カテゴリ�
 APPENDIX2_KEYWORDS = ['別紙2', '別紙２']
 APPENDIX3_KEYWORDS = ['別紙3', '別紙３']
 
+# 別紙2の最新様式を識別するためのキーワード（最新版に含まれる文言）
+APPENDIX2_LATEST_KEYWORDS = [
+    '愛知・名古屋2026',  # 最新の大会名
+    '2026アジア・アジアパラ競技大会',
+]
+# 旧様式を示すキーワード（これが含まれていたら古い）
+APPENDIX2_OLD_KEYWORDS = [
+    '第20回アジア競技大会',
+    '2026年アジア競技大会',
+]
+
 
 def process_contract(filepath, output_dir, company_name, approval_type,
                      appendix2_choice, appendix2_dir):
@@ -40,6 +51,9 @@ def process_contract(filepath, output_dir, company_name, approval_type,
         _check_seal_clause_exists(full_text, result)
     elif approval_type == 'electronic':
         _remove_seal_clause(doc)
+
+    # --- 別紙2の様式チェック ---
+    _check_appendix2_version(doc, result)
 
     # --- カテゴリー及びパートナー ページ削除 ---
     _remove_partner_pages(doc, result)
@@ -89,6 +103,46 @@ def _remove_seal_clause(doc):
     for para in doc.paragraphs:
         if '本契約の成立を証するため' in para.text:
             para.clear()
+
+
+def _check_appendix2_version(doc, result):
+    """別紙2が最新様式かどうかチェックする。"""
+    in_appendix2 = False
+    appendix2_text = []
+
+    for para in doc.paragraphs:
+        text = para.text.strip()
+
+        # 別紙2セクション開始
+        if any(kw in text for kw in APPENDIX2_KEYWORDS):
+            in_appendix2 = True
+            continue
+
+        # 別紙3に到達したら終了
+        if any(kw in text for kw in APPENDIX3_KEYWORDS):
+            break
+
+        if in_appendix2:
+            appendix2_text.append(text)
+
+    full_appendix2 = '\n'.join(appendix2_text)
+
+    # 旧様式キーワードが含まれていたらエラー
+    for old_kw in APPENDIX2_OLD_KEYWORDS:
+        if old_kw in full_appendix2:
+            result['errors'].append(
+                f'【別紙2エラー】旧様式の可能性があります。「{old_kw}」が検出されました。'
+                '最新の別紙2に差し替えてください。'
+            )
+            return
+
+    # 最新様式キーワードが含まれているか確認
+    has_latest = any(kw in full_appendix2 for kw in APPENDIX2_LATEST_KEYWORDS)
+    if not has_latest and appendix2_text:
+        result['warnings'].append(
+            '【別紙2確認】最新様式のキーワードが見つかりませんでした。'
+            '別紙2が最新版であることを確認してください。'
+        )
 
 
 def _remove_partner_pages(doc, result):

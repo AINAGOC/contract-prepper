@@ -21,10 +21,20 @@ def convert_to_pdf(filepath):
     # LibreOfficeは同時実行でロックファイル競合するため、
     # 一時的なユーザープロファイルを使って回避する
     with tempfile.TemporaryDirectory() as user_profile:
+        # PDF出力オプション: レイアウト保持を優先
+        # writer_pdf_Export でページレイアウトを厳密に保持
+        filter_options = (
+            'writer_pdf_Export:'
+            'UseLosslessCompression=true,'
+            'Quality=100,'
+            'ReduceImageResolution=false,'
+            'EmbedStandardFonts=true'
+        )
+
         proc = subprocess.run(
             [lo_path, '--headless', '--norestore',
              f'-env:UserInstallation=file://{user_profile}',
-             '--convert-to', 'pdf',
+             '--convert-to', 'pdf:writer_pdf_Export',
              '--outdir', output_dir,
              filepath],
             capture_output=True, text=True, timeout=120
