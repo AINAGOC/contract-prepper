@@ -1,0 +1,10 @@
+python/
+python_embed.zip
+output/
+uploads/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+*.bat
+README.md
