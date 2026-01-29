@@ -3,10 +3,16 @@ import io
 import zipfile
 import tempfile
 import shutil
+import traceback
+import logging
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, send_file
 import uuid
 from werkzeug.utils import secure_filename
+
+# ログ設定
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 from processors.common import clean_formatting, extract_entity_info, cross_check_entities
 from processors.contract import process_contract
@@ -82,9 +88,11 @@ def process_files():
 
     # Process each document
     entity_infos = {}
+    logger.info(f"Processing {len(uploaded_docs)} files for company: {company_name}")
 
     try:
         if 'contract' in uploaded_docs:
+            logger.info("Processing contract...")
             res = process_contract(
                 uploaded_docs['contract'], output_dir, company_name,
                 approval_type, appendix2_choice, APPENDIX2_DIR
@@ -130,13 +138,17 @@ def process_files():
             results['errors'].extend(cross_errors)
 
         # Convert all output docx/xlsx to PDF
+        logger.info(f"Converting files to PDF in {output_dir}")
         for fname in os.listdir(output_dir):
             fpath = os.path.join(output_dir, fname)
             if fname.endswith(('.docx', '.xlsx')):
                 try:
+                    logger.info(f"Converting {fname} to PDF...")
                     pdf_path = convert_to_pdf(fpath)
+                    logger.info(f"Converted: {pdf_path}")
                     os.remove(fpath)
                 except Exception as e:
+                    logger.error(f"PDF conversion failed for {fname}: {str(e)}\n{traceback.format_exc()}")
                     results['warnings'].append(f'{fname} のPDF変換に失敗: {str(e)}。元ファイルを同梱します。')
 
         # Create ZIP with output + backup
@@ -159,6 +171,7 @@ def process_files():
         )
 
     except Exception as e:
+        logger.error(f"Processing error: {str(e)}\n{traceback.format_exc()}")
         shutil.rmtree(work_dir, ignore_errors=True)
         return jsonify({'error': f'処理中にエラーが発生しました: {str(e)}'}), 500
 
