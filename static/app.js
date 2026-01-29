@@ -43,6 +43,51 @@ document.addEventListener('DOMContentLoaded', () => {
     const spinner = document.getElementById('spinner');
     const resultArea = document.getElementById('resultArea');
     const submitBtn = document.getElementById('submitBtn');
+    const spinnerText = document.getElementById('spinnerText');
+
+    // Wake up service before processing
+    async function wakeUpService() {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout for wake-up
+
+            const resp = await fetch('/health', {
+                signal: controller.signal,
+                cache: 'no-store'
+            });
+            clearTimeout(timeoutId);
+            return resp.ok;
+        } catch (e) {
+            console.log('Wake-up attempt:', e.message);
+            return false;
+        }
+    }
+
+    // Retry fetch with exponential backoff
+    async function fetchWithRetry(url, options, maxRetries = 3) {
+        let lastError;
+        for (let i = 0; i < maxRetries; i++) {
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 180000); // 3 min timeout
+
+                const resp = await fetch(url, {
+                    ...options,
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+                return resp;
+            } catch (e) {
+                lastError = e;
+                console.log(`Attempt ${i + 1} failed:`, e.message);
+                if (i < maxRetries - 1) {
+                    // Wait before retry (2s, 4s, 8s)
+                    await new Promise(r => setTimeout(r, 2000 * Math.pow(2, i)));
+                }
+            }
+        }
+        throw lastError;
+    }
 
     form.addEventListener('submit', async e => {
         e.preventDefault();
@@ -59,9 +104,31 @@ document.addEventListener('DOMContentLoaded', () => {
         submitBtn.disabled = true;
 
         try {
-            const resp = await fetch('/process', { method: 'POST', body: formData });
+            // Step 1: Wake up the service (Render free tier sleeps after 15 min)
+            if (spinnerText) spinnerText.textContent = 'サーバーを起動中...';
+
+            let awake = await wakeUpService();
+            if (!awake) {
+                // Retry wake-up
+                if (spinnerText) spinnerText.textContent = 'サーバー起動を待機中（最大60秒）...';
+                for (let i = 0; i < 6; i++) {
+                    await new Promise(r => setTimeout(r, 10000)); // Wait 10s
+                    awake = await wakeUpService();
+                    if (awake) break;
+                }
+            }
+
+            if (!awake) {
+                throw new Error('サーバーが応答しません。しばらく待ってから再試行してください。');
+            }
+
+            // Step 2: Process files
+            if (spinnerText) spinnerText.textContent = 'ファイルを処理中...';
+
+            const resp = await fetchWithRetry('/process', { method: 'POST', body: formData });
 
             if (resp.ok) {
+                if (spinnerText) spinnerText.textContent = 'ダウンロード準備中...';
                 const blob = await resp.blob();
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
@@ -79,10 +146,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 showResult('error', [data.error || '処理に失敗しました。']);
             }
         } catch (err) {
-            showResult('error', ['通信エラーが発生しました: ' + err.message]);
+            let message = err.message;
+            if (err.name === 'AbortError') {
+                message = 'リクエストがタイムアウトしました。サーバーが混雑している可能性があります。';
+            }
+            showResult('error', ['エラー: ' + message]);
         } finally {
             spinner.style.display = 'none';
             submitBtn.disabled = false;
+            if (spinnerText) spinnerText.textContent = '処理中...';
         }
     });
 
@@ -92,4 +164,9 @@ document.addEventListener('DOMContentLoaded', () => {
         alert.className = 'alert ' + (type === 'success' ? 'alert-success' : 'alert-danger');
         alert.innerHTML = messages.map(m => `<p class="mb-1">${m}</p>`).join('');
     }
+
+    // Pre-warm service when page loads (in background)
+    wakeUpService().then(ok => {
+        if (ok) console.log('Service is awake');
+    });
 });

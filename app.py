@@ -37,6 +37,12 @@ FILE_TYPES = {
 }
 
 
+@app.route('/health')
+def health():
+    """Health check endpoint for wake-up and monitoring."""
+    return jsonify({'status': 'ok', 'timestamp': datetime.now().isoformat()})
+
+
 @app.route('/')
 def index():
     appendix2_files = []
