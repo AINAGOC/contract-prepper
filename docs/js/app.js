@@ -154,24 +154,20 @@ async function processFiles(files, companyName, approvalType) {
                 results.errors.push(...processResult.errors);
                 results.warnings.push(...processResult.warnings);
 
-                // Output PDF
-                if (processResult.pdfBlob) {
-                    const pdfName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.pdf';
-                    outputFolder.file(pdfName, processResult.pdfBlob);
-                    results.processed.push(pdfName);
-                }
+                // Output original DOCX (layout preserved)
+                const docxName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.docx';
+                outputFolder.file(docxName, backupData);
+                results.processed.push(docxName);
             } else if (ext === 'xlsx') {
                 // Excel document processing
                 const processResult = await processXlsx(file, key, companyName);
                 results.errors.push(...processResult.errors);
                 results.warnings.push(...processResult.warnings);
 
-                // Output PDF
-                if (processResult.pdfBlob) {
-                    const pdfName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.pdf';
-                    outputFolder.file(pdfName, processResult.pdfBlob);
-                    results.processed.push(pdfName);
-                }
+                // Output original XLSX (layout preserved)
+                const xlsxName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.xlsx';
+                outputFolder.file(xlsxName, backupData);
+                results.processed.push(xlsxName);
             }
         } catch (err) {
             console.error(`Error processing ${key}:`, err);
@@ -189,17 +185,15 @@ async function processFiles(files, companyName, approvalType) {
     return results;
 }
 
-// Process Word document - convert to PDF
+// Process Word document - validate only
 async function processDocx(file, fileType, companyName, approvalType) {
-    const result = { errors: [], warnings: [], pdfBlob: null };
+    const result = { errors: [], warnings: [] };
 
     try {
         const arrayBuffer = await file.arrayBuffer();
 
-        // Convert to HTML using mammoth
-        setSpinnerText(`${CONFIG.fileTypes[fileType].label} を解析中...`);
-        const mammothResult = await mammoth.convertToHtml({ arrayBuffer });
-        const html = mammothResult.value;
+        // Extract text for validation
+        setSpinnerText(`${CONFIG.fileTypes[fileType].label} をチェック中...`);
         const fullText = await mammoth.extractRawText({ arrayBuffer }).then(r => r.value);
 
         // Validation
@@ -210,10 +204,6 @@ async function processDocx(file, fileType, companyName, approvalType) {
             validateOath(fullText, result);
         }
 
-        // Convert HTML to PDF
-        setSpinnerText(`${CONFIG.fileTypes[fileType].label} をPDFに変換中...`);
-        result.pdfBlob = await htmlToPdf(html, 'A4');
-
     } catch (err) {
         console.error('DOCX processing error:', err);
         result.errors.push(`Word処理エラー: ${err.message}`);
@@ -222,15 +212,16 @@ async function processDocx(file, fileType, companyName, approvalType) {
     return result;
 }
 
-// Process Excel file - convert to PDF
+// Process Excel file - validate only
 async function processXlsx(file, fileType, companyName) {
-    const result = { errors: [], warnings: [], pdfBlob: null };
+    const result = { errors: [], warnings: [] };
 
     try {
         const arrayBuffer = await file.arrayBuffer();
         const workbook = XLSX.read(arrayBuffer, { type: 'array' });
 
         // Extract text for validation
+        setSpinnerText(`${CONFIG.fileTypes[fileType].label} をチェック中...`);
         let fullText = '';
         for (const sheetName of workbook.SheetNames) {
             const sheet = workbook.Sheets[sheetName];
@@ -251,117 +242,12 @@ async function processXlsx(file, fileType, companyName) {
             }
         }
 
-        // Convert to HTML table
-        setSpinnerText(`${CONFIG.fileTypes[fileType].label} をPDFに変換中...`);
-        let html = '<div style="font-family: sans-serif; font-size: 10px;">';
-        for (const sheetName of workbook.SheetNames) {
-            const sheet = workbook.Sheets[sheetName];
-            html += `<h3>${sheetName}</h3>`;
-            html += XLSX.utils.sheet_to_html(sheet, { editable: false });
-        }
-        html += '</div>';
-
-        // Convert HTML to PDF (landscape for Excel)
-        result.pdfBlob = await htmlToPdf(html, 'A4', 'landscape');
-
     } catch (err) {
         console.error('XLSX processing error:', err);
         result.errors.push(`Excel処理エラー: ${err.message}`);
     }
 
     return result;
-}
-
-// Convert HTML to PDF using html2canvas and jsPDF
-async function htmlToPdf(html, format = 'A4', orientation = 'portrait') {
-    const { jsPDF } = window.jspdf;
-
-    // Page dimensions in mm
-    const pageWidth = orientation === 'landscape' ? 297 : 210;
-    const pageHeight = orientation === 'landscape' ? 210 : 297;
-    const margin = 10;
-    const contentWidth = pageWidth - (margin * 2);
-    const contentHeight = pageHeight - (margin * 2);
-
-    // Create container with exact page width
-    const container = document.getElementById('pdfRenderContainer');
-    const pxPerMm = 3.78; // approximate px per mm at 96dpi
-    const containerWidthPx = contentWidth * pxPerMm;
-
-    container.innerHTML = `
-        <div style="
-            width: ${containerWidthPx}px;
-            padding: 0;
-            background: white;
-            font-family: 'Yu Gothic', 'MS Gothic', 'Hiragino Kaku Gothic Pro', sans-serif;
-            font-size: 10.5pt;
-            line-height: 1.8;
-            color: black;
-        ">${html}</div>
-    `;
-
-    // Wait for rendering
-    await new Promise(r => setTimeout(r, 200));
-
-    // Capture with html2canvas
-    const canvas = await html2canvas(container.firstElementChild, {
-        scale: 2,
-        useCORS: true,
-        logging: false,
-        backgroundColor: '#ffffff'
-    });
-
-    // Create PDF
-    const pdf = new jsPDF({
-        orientation: orientation,
-        unit: 'mm',
-        format: format
-    });
-
-    // Calculate dimensions
-    const imgWidth = contentWidth;
-    const imgHeight = (canvas.height * imgWidth) / canvas.width;
-
-    // Calculate how many pages we need
-    const totalPages = Math.ceil(imgHeight / contentHeight);
-
-    // For each page, clip the appropriate portion of the canvas
-    for (let page = 0; page < totalPages; page++) {
-        if (page > 0) {
-            pdf.addPage();
-        }
-
-        // Calculate which portion of the canvas to use for this page
-        const sourceY = (page * contentHeight / imgHeight) * canvas.height;
-        const sourceHeight = Math.min(
-            (contentHeight / imgHeight) * canvas.height,
-            canvas.height - sourceY
-        );
-
-        // Create a temporary canvas for this page's content
-        const pageCanvas = document.createElement('canvas');
-        pageCanvas.width = canvas.width;
-        pageCanvas.height = sourceHeight;
-
-        const ctx = pageCanvas.getContext('2d');
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
-        ctx.drawImage(
-            canvas,
-            0, sourceY, canvas.width, sourceHeight,  // source
-            0, 0, canvas.width, sourceHeight          // destination
-        );
-
-        const pageImgData = pageCanvas.toDataURL('image/jpeg', 0.95);
-        const pageImgHeight = (sourceHeight * imgWidth) / canvas.width;
-
-        pdf.addImage(pageImgData, 'JPEG', margin, margin, imgWidth, pageImgHeight);
-    }
-
-    // Clear container
-    container.innerHTML = '';
-
-    return pdf.output('blob');
 }
 
 // Validate contract document
@@ -455,6 +341,13 @@ function displayResults(results) {
         }
         html += '</ul></div>';
     }
+
+    // PDF conversion instructions
+    html += `<div class="alert alert-info mt-3">
+        <strong>PDF変換方法:</strong><br>
+        <small>出力されたファイルをWord/Excelで開き、「ファイル」→「エクスポート」→「PDF/XPSの作成」でPDFに変換してください。<br>
+        ※レイアウトを維持するため、元のファイル形式で出力しています。</small>
+    </div>`;
 
     alert.className = '';
     alert.innerHTML = html;
