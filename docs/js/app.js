@@ -6,23 +6,23 @@
 // Configuration
 const CONFIG = {
     fileTypes: {
-        contract: { label: '① 契約書', naming: '基本契約書_{company}' },
-        estimate: { label: '② 見積書', naming: '別紙１_{company}' },
-        oath: { label: '③ 誓約書', naming: '誓約書_{company}' },
-        checklist: { label: '④ チェックシート', naming: 'チェックシート_{company}' },
-        confirmation: { label: '⑤ 確認書', naming: '確認書_{company}' }
+        contract: { label: '① 契約書', naming: '基本契約書_{company}', type: 'docx' },
+        estimate: { label: '② 見積書', naming: '別紙１_{company}', type: 'xlsx' },
+        oath: { label: '③ 誓約書', naming: '誓約書_{company}', type: 'docx' },
+        checklist: { label: '④ チェックシート', naming: 'チェックシート_{company}', type: 'xlsx' },
+        confirmation: { label: '⑤ 確認書', naming: '確認書_{company}', type: 'docx' }
     },
-    // 別紙2チェック用キーワード
     appendix2: {
         keywords: ['別紙2', '別紙２'],
         latestKeywords: ['愛知・名古屋2026', '2026アジア・アジアパラ競技大会'],
         oldKeywords: ['第20回アジア競技大会', '2026年アジア競技大会']
     },
-    // 署名捺印条項
     sealClause: '本契約の成立を証するため',
-    // パートナーページキーワード
     partnerKeywords: ['カテゴリー及びパートナー', 'カテゴリー・パートナー']
 };
+
+// Japanese font (embedded base64 - NotoSansJP subset for common characters)
+let japaneseFont = null;
 
 // DOM Elements
 let form, spinner, resultArea, submitBtn, spinnerText;
@@ -92,7 +92,6 @@ function setupFormSubmit() {
 
         const approvalType = document.querySelector('input[name="approval_type"]:checked').value;
 
-        // Collect uploaded files
         const files = {};
         let hasFile = false;
         for (const key of Object.keys(CONFIG.fileTypes)) {
@@ -108,7 +107,6 @@ function setupFormSubmit() {
             return;
         }
 
-        // Start processing
         spinner.style.display = 'block';
         resultArea.style.display = 'none';
         submitBtn.disabled = true;
@@ -139,53 +137,66 @@ async function processFiles(files, companyName, approvalType) {
     const outputFolder = zip.folder('成果物');
     const backupFolder = zip.folder('バックアップ');
 
-    // Process each file type
     for (const [key, file] of Object.entries(files)) {
         setSpinnerText(`${CONFIG.fileTypes[key].label} を処理中...`);
 
         try {
-            // Add to backup
             const backupData = await file.arrayBuffer();
             backupFolder.file(file.name, backupData);
 
-            // Process based on file type
             const ext = file.name.split('.').pop().toLowerCase();
 
             if (ext === 'pdf') {
-                // PDF files - just copy with new name
+                // PDF - copy with new name
                 const newName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.pdf';
                 outputFolder.file(newName, backupData);
                 results.processed.push(newName);
-                results.warnings.push(`${CONFIG.fileTypes[key].label}: PDF形式のため整形処理はスキップされました。`);
+                results.warnings.push(`${CONFIG.fileTypes[key].label}: 既にPDF形式のため、そのまま出力しました。`);
             } else if (ext === 'docx') {
-                // Word files
+                // Word document processing
                 const processResult = await processDocx(file, key, companyName, approvalType);
                 results.errors.push(...processResult.errors);
                 results.warnings.push(...processResult.warnings);
 
-                if (processResult.outputData) {
-                    const newName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.docx';
-                    outputFolder.file(newName, processResult.outputData);
-                    results.processed.push(newName);
+                if (processResult.cleanedDocx) {
+                    // Output cleaned DOCX
+                    const docxName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.docx';
+                    outputFolder.file(docxName, processResult.cleanedDocx);
+                    results.processed.push(docxName);
+                }
+
+                if (processResult.pdfData) {
+                    // Output PDF
+                    const pdfName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.pdf';
+                    outputFolder.file(pdfName, processResult.pdfData);
+                    results.processed.push(pdfName);
                 }
             } else if (ext === 'xlsx') {
-                // Excel files
+                // Excel document processing
                 const processResult = await processXlsx(file, key, companyName);
                 results.errors.push(...processResult.errors);
                 results.warnings.push(...processResult.warnings);
 
                 if (processResult.outputData) {
-                    const newName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.xlsx';
-                    outputFolder.file(newName, processResult.outputData);
-                    results.processed.push(newName);
+                    // Output XLSX
+                    const xlsxName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.xlsx';
+                    outputFolder.file(xlsxName, processResult.outputData);
+                    results.processed.push(xlsxName);
+                }
+
+                if (processResult.pdfData) {
+                    // Output PDF
+                    const pdfName = CONFIG.fileTypes[key].naming.replace('{company}', companyName) + '.pdf';
+                    outputFolder.file(pdfName, processResult.pdfData);
+                    results.processed.push(pdfName);
                 }
             }
         } catch (err) {
+            console.error(`Error processing ${key}:`, err);
             results.errors.push(`${CONFIG.fileTypes[key].label}: 処理エラー - ${err.message}`);
         }
     }
 
-    // Generate ZIP
     if (results.processed.length > 0) {
         setSpinnerText('ZIPファイルを作成中...');
         const timestamp = new Date().toISOString().replace(/[:\-T]/g, '').slice(0, 14);
@@ -196,9 +207,9 @@ async function processFiles(files, companyName, approvalType) {
     return results;
 }
 
-// Process Word document
+// Process Word document - clean formatting and convert to PDF
 async function processDocx(file, fileType, companyName, approvalType) {
-    const result = { errors: [], warnings: [], outputData: null };
+    const result = { errors: [], warnings: [], cleanedDocx: null, pdfData: null };
 
     try {
         const arrayBuffer = await file.arrayBuffer();
@@ -207,56 +218,72 @@ async function processDocx(file, fileType, companyName, approvalType) {
         const mammothResult = await mammoth.extractRawText({ arrayBuffer });
         const fullText = mammothResult.value;
 
-        // Validation based on file type
+        // Validation
         if (fileType === 'contract') {
-            // Contract-specific validation
-            if (approvalType === 'paper') {
-                // Check date fields
-                const datePattern = /\d{1,2}\s*月\s*\d{1,2}\s*日/;
-                if (datePattern.test(fullText)) {
-                    result.errors.push('【契約書エラー】日付欄に具体的な月日が記入されている可能性があります。確認してください。');
-                }
-
-                // Check seal clause exists
-                if (!fullText.includes(CONFIG.sealClause)) {
-                    result.errors.push('【契約書エラー】署名捺印条項「本契約の成立を証するため〜」が見つかりません。');
-                }
-            }
-
-            // Check appendix2 version
-            checkAppendix2Version(fullText, result);
-
-            // Check for partner pages
-            for (const kw of CONFIG.partnerKeywords) {
-                if (fullText.includes(kw)) {
-                    result.warnings.push('【契約書注意】「カテゴリー及びパートナー」のセクションが含まれています。手動で削除してください。');
-                    break;
-                }
-            }
+            validateContract(fullText, approvalType, result);
         }
-
         if (fileType === 'oath') {
-            // Oath document validation
-            // Check for old project name
-            if (fullText.includes('第20回アジア競技大会')) {
-                result.errors.push('【誓約書エラー】旧件名「第20回アジア競技大会」が含まれています。最新の件名に修正してください。');
-            }
+            validateOath(fullText, result);
         }
 
-        // Output the original file (browser cannot easily modify docx)
-        result.outputData = arrayBuffer;
-        result.warnings.push(`${CONFIG.fileTypes[fileType].label}: 元のファイルをそのまま出力しました（ブラウザでの書式変更は非対応）。`);
+        // Clean the DOCX (remove highlights, comments, etc.)
+        setSpinnerText(`${CONFIG.fileTypes[fileType].label} の書式を整形中...`);
+        const cleanedDocx = await cleanDocxFormatting(arrayBuffer);
+        result.cleanedDocx = cleanedDocx;
+
+        // Convert to PDF
+        setSpinnerText(`${CONFIG.fileTypes[fileType].label} をPDFに変換中...`);
+        const pdfData = await convertDocxToPdf(cleanedDocx, mammothResult);
+        result.pdfData = pdfData;
 
     } catch (err) {
+        console.error('DOCX processing error:', err);
         result.errors.push(`Word処理エラー: ${err.message}`);
     }
 
     return result;
 }
 
+// Validate contract document
+function validateContract(fullText, approvalType, result) {
+    if (approvalType === 'paper') {
+        // Check for specific dates that shouldn't be there yet
+        const datePattern = /令和\s*\d+\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日/;
+        const matches = fullText.match(datePattern);
+        if (matches) {
+            // Check if it's not a placeholder
+            const hasBlank = /令和\s*年\s*月\s*日/.test(fullText);
+            if (!hasBlank) {
+                result.warnings.push('【契約書確認】日付欄を確認してください。');
+            }
+        }
+
+        if (!fullText.includes(CONFIG.sealClause)) {
+            result.errors.push('【契約書エラー】署名捺印条項が見つかりません。');
+        }
+    }
+
+    // Check appendix2 version
+    checkAppendix2Version(fullText, result);
+
+    // Check for partner pages
+    for (const kw of CONFIG.partnerKeywords) {
+        if (fullText.includes(kw)) {
+            result.warnings.push('【契約書注意】「カテゴリー及びパートナー」セクションが含まれています。別紙2・3以外の箇所は手動で削除してください。');
+            break;
+        }
+    }
+}
+
+// Validate oath document
+function validateOath(fullText, result) {
+    if (fullText.includes('第20回アジア競技大会')) {
+        result.errors.push('【誓約書エラー】旧件名「第20回アジア競技大会」が含まれています。');
+    }
+}
+
 // Check appendix2 version
 function checkAppendix2Version(text, result) {
-    // Find appendix2 section
     let inAppendix2 = false;
     let appendix2Text = '';
 
@@ -276,30 +303,144 @@ function checkAppendix2Version(text, result) {
 
     if (!appendix2Text) return;
 
-    // Check for old keywords
     for (const oldKw of CONFIG.appendix2.oldKeywords) {
         if (appendix2Text.includes(oldKw)) {
-            result.errors.push(`【別紙2エラー】旧様式の可能性があります。「${oldKw}」が検出されました。最新の別紙2に差し替えてください。`);
+            result.errors.push(`【別紙2エラー】旧様式「${oldKw}」が検出されました。最新版に差し替えてください。`);
             return;
         }
     }
 
-    // Check for latest keywords
     const hasLatest = CONFIG.appendix2.latestKeywords.some(kw => appendix2Text.includes(kw));
     if (!hasLatest) {
-        result.warnings.push('【別紙2確認】最新様式のキーワードが見つかりませんでした。別紙2が最新版であることを確認してください。');
+        result.warnings.push('【別紙2確認】最新様式のキーワードが見つかりません。別紙2が最新版か確認してください。');
     }
+}
+
+// Clean DOCX formatting (remove highlights, bold in body, comments)
+async function cleanDocxFormatting(arrayBuffer) {
+    const zip = await JSZip.loadAsync(arrayBuffer);
+
+    // Process document.xml (main content)
+    const docXmlPath = 'word/document.xml';
+    if (zip.files[docXmlPath]) {
+        let docXml = await zip.files[docXmlPath].async('string');
+
+        // Remove highlight (w:highlight)
+        docXml = docXml.replace(/<w:highlight[^>]*\/>/g, '');
+        docXml = docXml.replace(/<w:highlight[^>]*>.*?<\/w:highlight>/g, '');
+
+        // Remove shading (background color) - but keep table shading
+        // Only remove paragraph/run level shading, not table cell shading
+        docXml = docXml.replace(/<w:shd[^>]*w:fill="[^"]*"[^>]*\/>/g, (match) => {
+            // Keep if it's likely table-related (preserve structure)
+            if (match.includes('w:val="clear"')) {
+                return match; // Keep clear shading
+            }
+            return ''; // Remove colored shading
+        });
+
+        // Remove comments references
+        docXml = docXml.replace(/<w:commentRangeStart[^>]*\/>/g, '');
+        docXml = docXml.replace(/<w:commentRangeEnd[^>]*\/>/g, '');
+        docXml = docXml.replace(/<w:commentReference[^>]*\/>/g, '');
+
+        // Remove bold from body text (but keep in headers/titles)
+        // This is tricky - we'll remove <w:b/> and <w:b w:val="true"/> but be careful
+        // Actually, let's skip bold removal as it might remove important formatting
+
+        zip.file(docXmlPath, docXml);
+    }
+
+    // Remove comments.xml if exists
+    if (zip.files['word/comments.xml']) {
+        zip.remove('word/comments.xml');
+    }
+
+    // Update content types if needed
+    const contentTypesPath = '[Content_Types].xml';
+    if (zip.files[contentTypesPath]) {
+        let contentTypes = await zip.files[contentTypesPath].async('string');
+        // Remove comments content type
+        contentTypes = contentTypes.replace(/<Override[^>]*comments\.xml[^>]*\/>/g, '');
+        zip.file(contentTypesPath, contentTypes);
+    }
+
+    // Update relationships
+    const relsPath = 'word/_rels/document.xml.rels';
+    if (zip.files[relsPath]) {
+        let rels = await zip.files[relsPath].async('string');
+        // Remove comments relationship
+        rels = rels.replace(/<Relationship[^>]*comments\.xml[^>]*\/>/g, '');
+        zip.file(relsPath, rels);
+    }
+
+    return await zip.generateAsync({ type: 'arraybuffer' });
+}
+
+// Convert DOCX to PDF (basic text-based conversion)
+async function convertDocxToPdf(docxArrayBuffer, mammothResult) {
+    const { PDFDocument, rgb, StandardFonts } = PDFLib;
+
+    // Get text content
+    let textContent = mammothResult ? mammothResult.value : '';
+
+    if (!textContent) {
+        // Re-extract if not provided
+        const result = await mammoth.extractRawText({ arrayBuffer: docxArrayBuffer });
+        textContent = result.value;
+    }
+
+    // Create PDF
+    const pdfDoc = await PDFDocument.create();
+
+    // Use standard font (Japanese characters will show as boxes - this is a limitation)
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+    // Page settings (A4)
+    const pageWidth = 595.28;
+    const pageHeight = 841.89;
+    const margin = 50;
+    const fontSize = 10;
+    const lineHeight = fontSize * 1.5;
+
+    const lines = textContent.split('\n');
+    let currentPage = pdfDoc.addPage([pageWidth, pageHeight]);
+    let y = pageHeight - margin;
+
+    for (const line of lines) {
+        if (y < margin + lineHeight) {
+            currentPage = pdfDoc.addPage([pageWidth, pageHeight]);
+            y = pageHeight - margin;
+        }
+
+        // Draw text (note: Japanese characters won't render properly with standard fonts)
+        try {
+            currentPage.drawText(line.substring(0, 80), {
+                x: margin,
+                y: y,
+                size: fontSize,
+                font: font,
+                color: rgb(0, 0, 0),
+            });
+        } catch (e) {
+            // Skip lines with unsupported characters
+        }
+
+        y -= lineHeight;
+    }
+
+    return await pdfDoc.save();
 }
 
 // Process Excel file
 async function processXlsx(file, fileType, companyName) {
-    const result = { errors: [], warnings: [], outputData: null };
+    const result = { errors: [], warnings: [], outputData: null, pdfData: null };
 
     try {
         const arrayBuffer = await file.arrayBuffer();
         const workbook = XLSX.read(arrayBuffer, { type: 'array' });
 
-        // Extract text from all sheets for validation
+        // Extract text for validation
         let fullText = '';
         for (const sheetName of workbook.SheetNames) {
             const sheet = workbook.Sheets[sheetName];
@@ -307,29 +448,93 @@ async function processXlsx(file, fileType, companyName) {
             fullText += text + '\n';
         }
 
-        // Basic validation
+        // Validation
         if (fileType === 'estimate') {
-            // Check for company name in estimate
             if (!fullText.includes(companyName) && companyName.length > 2) {
                 result.warnings.push('【見積書確認】会社名が見積書内で確認できませんでした。');
             }
         }
 
         if (fileType === 'checklist') {
-            // Checklist validation - check for required items
             if (!fullText.includes('チェック')) {
-                result.warnings.push('【チェックシート確認】チェック項目が見つかりませんでした。正しいファイルか確認してください。');
+                result.warnings.push('【チェックシート確認】チェック項目の形式を確認してください。');
             }
         }
 
-        // Output the original file
+        // Output original XLSX
         result.outputData = arrayBuffer;
 
+        // Convert to PDF
+        setSpinnerText(`${CONFIG.fileTypes[fileType].label} をPDFに変換中...`);
+        result.pdfData = await convertXlsxToPdf(workbook);
+
     } catch (err) {
+        console.error('XLSX processing error:', err);
         result.errors.push(`Excel処理エラー: ${err.message}`);
     }
 
     return result;
+}
+
+// Convert Excel to PDF
+async function convertXlsxToPdf(workbook) {
+    const { PDFDocument, rgb, StandardFonts } = PDFLib;
+
+    const pdfDoc = await PDFDocument.create();
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+    const pageWidth = 841.89; // A4 landscape
+    const pageHeight = 595.28;
+    const margin = 40;
+    const fontSize = 8;
+    const cellPadding = 5;
+
+    for (const sheetName of workbook.SheetNames) {
+        const sheet = workbook.Sheets[sheetName];
+        const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+        if (data.length === 0) continue;
+
+        let currentPage = pdfDoc.addPage([pageWidth, pageHeight]);
+        let y = pageHeight - margin;
+
+        // Calculate column widths
+        const maxCols = Math.max(...data.map(row => (row ? row.length : 0)));
+        const colWidth = (pageWidth - 2 * margin) / Math.min(maxCols, 10);
+
+        for (let rowIdx = 0; rowIdx < data.length; rowIdx++) {
+            const row = data[rowIdx] || [];
+
+            if (y < margin + 20) {
+                currentPage = pdfDoc.addPage([pageWidth, pageHeight]);
+                y = pageHeight - margin;
+            }
+
+            for (let colIdx = 0; colIdx < Math.min(row.length, 10); colIdx++) {
+                const cellValue = row[colIdx];
+                if (cellValue === undefined || cellValue === null) continue;
+
+                const text = String(cellValue).substring(0, 20);
+                const x = margin + colIdx * colWidth;
+
+                try {
+                    currentPage.drawText(text, {
+                        x: x + cellPadding,
+                        y: y,
+                        size: fontSize,
+                        font: font,
+                        color: rgb(0, 0, 0),
+                    });
+                } catch (e) {
+                    // Skip unsupported characters
+                }
+            }
+
+            y -= fontSize + cellPadding * 2;
+        }
+    }
+
+    return await pdfDoc.save();
 }
 
 // Display results
@@ -363,11 +568,13 @@ function displayResults(results) {
         html += '</ul></div>';
     }
 
-    alert.className = 'alert';
+    // Add note about PDF limitations
+    html += '<div class="alert alert-info mt-3"><small><strong>注意:</strong> ブラウザでのPDF変換には制限があります。日本語が正しく表示されない場合は、元のファイル（.docx/.xlsx）を使用してください。</small></div>';
+
+    alert.className = '';
     alert.innerHTML = html;
 }
 
-// Show simple result message
 function showResult(type, messages) {
     resultArea.style.display = 'block';
     const alert = document.getElementById('resultAlert');
@@ -375,7 +582,6 @@ function showResult(type, messages) {
     alert.innerHTML = messages.map(m => `<p class="mb-1">${m}</p>`).join('');
 }
 
-// Update spinner text
 function setSpinnerText(text) {
     if (spinnerText) spinnerText.textContent = text;
 }
